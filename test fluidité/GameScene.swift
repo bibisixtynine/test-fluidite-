@@ -58,6 +58,10 @@ class GameScene: SKScene {
     private var panVelocity = CGVector.zero
     private let panFriction: CGFloat = 0.92
     
+    // Camera tracking
+    private var trackedNode: SKSpriteNode?
+    private var trackingOffset: CGVector = .zero
+    
     // Edit mode
     private var isEditing = false
     private var selectedSprites: Set<SKSpriteNode> = []
@@ -187,6 +191,10 @@ class GameScene: SKScene {
         if abs(panVelocity.dx) > 0.5 || abs(panVelocity.dy) > 0.5 {
             cameraNode.position.x += panVelocity.dx
             cameraNode.position.y += panVelocity.dy
+            if trackedNode != nil {
+                trackingOffset.dx += panVelocity.dx
+                trackingOffset.dy += panVelocity.dy
+            }
             panVelocity.dx *= panFriction
             panVelocity.dy *= panFriction
         } else {
@@ -231,19 +239,35 @@ class GameScene: SKScene {
             
             sprites[i].velocity = vel
         }
+        
+        // Camera tracking: follow the tracked sprite
+        if let tracked = trackedNode {
+            cameraNode.position = CGPoint(
+                x: tracked.position.x + trackingOffset.dx,
+                y: tracked.position.y + trackingOffset.dy
+            )
+        }
     }
     
     // MARK: - Scroll Pan (called from ViewController scroll monitor)
     
     func handleScrollDelta(dx: CGFloat, dy: CGFloat) {
         let zoomScale = cameraNode.xScale
+        let offsetDx = -dx * zoomScale
+        let offsetDy = dy * zoomScale
         // Scroll delta: positive dx = scroll right = move camera left
-        cameraNode.position.x -= dx * zoomScale
+        cameraNode.position.x += offsetDx
         // Scroll delta: positive dy = scroll up = move camera up (SpriteKit Y is up)
-        cameraNode.position.y += dy * zoomScale
+        cameraNode.position.y += offsetDy
+        
+        // Update tracking offset so camera keeps following from new position
+        if trackedNode != nil {
+            trackingOffset.dx += offsetDx
+            trackingOffset.dy += offsetDy
+        }
         
         // Accumulate velocity for inertia
-        panVelocity = CGVector(dx: -dx * zoomScale, dy: dy * zoomScale)
+        panVelocity = CGVector(dx: offsetDx, dy: offsetDy)
     }
     
     func handleScrollEnded() {
@@ -259,6 +283,14 @@ class GameScene: SKScene {
     }
     
     // MARK: - Zoom to Fit
+    
+    @objc private func togglePerformanceDisplay() {
+        guard let skView = self.view as? SKView else { return }
+        let show = !skView.showsFPS
+        skView.showsFPS = show
+        skView.showsNodeCount = show
+        skView.showsDrawCount = show
+    }
     
     @objc private func zoomToFitAll() {
         guard !sprites.isEmpty, let view = self.view else { return }
@@ -327,6 +359,12 @@ class GameScene: SKScene {
         let zoomFitItem = NSMenuItem(title: "Voir tous les sprites", action: #selector(zoomToFitAll), keyEquivalent: "")
         zoomFitItem.target = self
         menu.addItem(zoomFitItem)
+        
+        let skView = self.view as? SKView
+        let perfTitle = (skView?.showsFPS ?? false) ? "Masquer les performances" : "Afficher les performances"
+        let perfItem = NSMenuItem(title: perfTitle, action: #selector(togglePerformanceDisplay), keyEquivalent: "")
+        perfItem.target = self
+        menu.addItem(perfItem)
         
         if isEditing {
             menu.addItem(.separator())
@@ -422,6 +460,7 @@ class GameScene: SKScene {
     
     @objc private func toggleEditMode() {
         isEditing.toggle()
+        trackedNode = nil
         
         if isEditing {
             updateBoundsVisuals()
@@ -471,7 +510,21 @@ class GameScene: SKScene {
     // MARK: - Mouse Events
     
     override func mouseDown(with event: NSEvent) {
-        guard isEditing else { return }
+        if !isEditing {
+            let location = event.location(in: self)
+            if let clicked = sprites.first(where: { $0.node.contains(location) }) {
+                // Track this sprite: camera follows it, keeping it at click position on screen
+                trackedNode = clicked.node
+                trackingOffset = CGVector(
+                    dx: cameraNode.position.x - clicked.node.position.x,
+                    dy: cameraNode.position.y - clicked.node.position.y
+                )
+                panVelocity = .zero
+            } else {
+                trackedNode = nil
+            }
+            return
+        }
         
         let location = event.location(in: self)
         let shift = event.modifierFlags.contains(.shift)
