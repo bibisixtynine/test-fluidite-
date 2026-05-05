@@ -233,8 +233,42 @@ class GameScene: SKScene {
     
     func handleMagnification(_ magnification: CGFloat) {
         let newScale = cameraNode.xScale / (1.0 + magnification * 0.08)
-        let clamped = max(0.1, min(5.0, newScale))
+        let clamped = max(0.1, min(20.0, newScale))
         cameraNode.setScale(clamped)
+    }
+    
+    // MARK: - Zoom to Fit
+    
+    @objc private func zoomToFitAll() {
+        guard !sprites.isEmpty, let view = self.view else { return }
+        
+        // Compute bounding box of all sprites
+        var minX = CGFloat.infinity, minY = CGFloat.infinity
+        var maxX = -CGFloat.infinity, maxY = -CGFloat.infinity
+        for entry in sprites {
+            let pos = entry.node.position
+            minX = min(minX, pos.x - entry.halfW)
+            minY = min(minY, pos.y - entry.halfH)
+            maxX = max(maxX, pos.x + entry.halfW)
+            maxY = max(maxY, pos.y + entry.halfH)
+        }
+        
+        let contentWidth = maxX - minX
+        let contentHeight = maxY - minY
+        guard contentWidth > 0, contentHeight > 0 else { return }
+        
+        // Center camera on content
+        cameraNode.position = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
+        
+        // Scale to fit with a small margin
+        let margin: CGFloat = 1.1
+        let scaleX = (contentWidth * margin) / view.bounds.width
+        let scaleY = (contentHeight * margin) / view.bounds.height
+        let newScale = max(scaleX, scaleY)
+        let clamped = max(0.1, min(20.0, newScale))
+        cameraNode.setScale(clamped)
+        
+        panVelocity = .zero
     }
     
     // MARK: - Context Menu
@@ -266,6 +300,12 @@ class GameScene: SKScene {
         let restoreItem = NSMenuItem(title: "Charger une scène...", action: #selector(loadSceneFromFile), keyEquivalent: "")
         restoreItem.target = self
         menu.addItem(restoreItem)
+        
+        menu.addItem(.separator())
+        
+        let zoomFitItem = NSMenuItem(title: "Voir tous les sprites", action: #selector(zoomToFitAll), keyEquivalent: "")
+        zoomFitItem.target = self
+        menu.addItem(zoomFitItem)
         
         if isEditing {
             menu.addItem(.separator())
@@ -379,9 +419,15 @@ class GameScene: SKScene {
             let b = sprites[idx].bounds
             let halfW = sprites[idx].halfW
             let halfH = sprites[idx].halfH
+            
+            let minX = b.minX + halfW
+            let maxX = b.maxX - halfW
+            let minY = b.minY + halfH
+            let maxY = b.maxY - halfH
+            
             node.position = CGPoint(
-                x: CGFloat.random(in: (b.minX + halfW)...(b.maxX - halfW)),
-                y: CGFloat.random(in: (b.minY + halfH)...(b.maxY - halfH))
+                x: minX < maxX ? CGFloat.random(in: minX...maxX) : b.midX,
+                y: minY < maxY ? CGFloat.random(in: minY...maxY) : b.midY
             )
             
             sprites[idx].velocity = CGVector(
