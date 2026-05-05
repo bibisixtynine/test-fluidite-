@@ -25,6 +25,8 @@ struct SpriteData: Codable {
     var boundsH: CGFloat?
     var animationType: String?
     var oscillatingRotation: Bool?
+    var zOrder: CGFloat?
+    var cameraTracked: Bool?
 }
 
 struct BouncingSprite {
@@ -627,6 +629,16 @@ class GameScene: SKScene {
                 zOrderSubmenuItem.submenu = zOrderMenu
                 menu.addItem(zOrderSubmenuItem)
                 
+                // Camera tracking
+                if selectedSprites.count == 1, let node = selectedSprites.first {
+                    let isTracked = trackedNode == node
+                    let trackTitle = isTracked ? "Désactiver le suivi caméra" : "Activer le suivi caméra"
+                    let trackItem = NSMenuItem(title: trackTitle, action: #selector(toggleCameraTrackingOnSelected), keyEquivalent: "")
+                    trackItem.target = self
+                    trackItem.state = isTracked ? .on : .off
+                    menu.addItem(trackItem)
+                }
+                
                 // Scale submenu
                 let scaleMenu = NSMenu(title: "Échelle")
                 for factor in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0] {
@@ -727,6 +739,21 @@ class GameScene: SKScene {
         let minZ = sprites.map { $0.node.zPosition }.min() ?? 0
         for node in selectedSprites {
             node.zPosition = minZ - 1
+        }
+    }
+    
+    // MARK: - Camera Tracking Action
+    
+    @objc private func toggleCameraTrackingOnSelected() {
+        guard selectedSprites.count == 1, let node = selectedSprites.first else { return }
+        if trackedNode == node {
+            trackedNode = nil
+        } else {
+            trackedNode = node
+            trackingOffset = CGVector(
+                dx: cameraNode.position.x - node.position.x,
+                dy: cameraNode.position.y - node.position.y
+            )
         }
     }
     
@@ -918,12 +945,33 @@ class GameScene: SKScene {
         updateGroupSelectionVisual()
     }
     
+    // MARK: - Hit Test Helper
+    
+    /// Returns the topmost sprite at the given location.
+    /// Prefers highest zPosition, then smallest area to avoid selecting large backgrounds.
+    private func topmostSprite(at location: CGPoint) -> BouncingSprite? {
+        var best: BouncingSprite?
+        var bestZ: CGFloat = -.greatestFiniteMagnitude
+        var bestArea: CGFloat = .greatestFiniteMagnitude
+        for sprite in sprites {
+            guard sprite.node.contains(location) else { continue }
+            let z = sprite.node.zPosition
+            let area = sprite.halfW * sprite.halfH
+            if z > bestZ || (z == bestZ && area < bestArea) {
+                best = sprite
+                bestZ = z
+                bestArea = area
+            }
+        }
+        return best
+    }
+    
     // MARK: - Mouse Events
     
     override func mouseDown(with event: NSEvent) {
         if !isEditing {
             let location = event.location(in: self)
-            if let clicked = sprites.first(where: { $0.node.contains(location) }) {
+            if let clicked = topmostSprite(at: location) {
                 // Track this sprite: camera follows it, keeping it at click position on screen
                 trackedNode = clicked.node
                 trackingOffset = CGVector(
@@ -959,8 +1007,8 @@ class GameScene: SKScene {
             return
         }
         
-        // 3. Check if clicking on an individual sprite (slower for large counts)
-        let clickedNode = sprites.first(where: { $0.node.contains(location) })?.node
+        // 3. Check if clicking on an individual sprite (topmost first)
+        let clickedNode = topmostSprite(at: location)?.node
         
         if let node = clickedNode {
             if shift {
@@ -1545,7 +1593,9 @@ class GameScene: SKScene {
                         boundsW: entry.bounds.size.width,
                         boundsH: entry.bounds.size.height,
                         animationType: entry.animationType.rawValue,
-                        oscillatingRotation: entry.oscillatingRotation
+                        oscillatingRotation: entry.oscillatingRotation,
+                        zOrder: node.zPosition,
+                        cameraTracked: self.trackedNode == node ? true : nil
                     ))
                 }
                 
@@ -1593,7 +1643,12 @@ class GameScene: SKScene {
                 }
                 let animType = spriteData.animationType.flatMap { AnimationType(rawValue: $0) } ?? .bouncing
                 let oscRot = spriteData.oscillatingRotation ?? false
+                sprite.zPosition = spriteData.zOrder ?? 0
                 sprites.append(makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot))
+                if spriteData.cameraTracked == true {
+                    trackedNode = sprite
+                    trackingOffset = .zero
+                }
             }
             
             rebuildNodeIndex()
@@ -1643,7 +1698,12 @@ class GameScene: SKScene {
                         }
                         let animType = spriteData.animationType.flatMap { AnimationType(rawValue: $0) } ?? .bouncing
                         let oscRot = spriteData.oscillatingRotation ?? false
+                        sprite.zPosition = spriteData.zOrder ?? 0
                         self.sprites.append(self.makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot))
+                        if spriteData.cameraTracked == true {
+                            self.trackedNode = sprite
+                            self.trackingOffset = .zero
+                        }
                     }
                     
                     self.rebuildNodeIndex()
