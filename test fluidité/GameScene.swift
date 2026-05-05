@@ -23,6 +23,8 @@ struct SpriteData: Codable {
     var boundsY: CGFloat?
     var boundsW: CGFloat?
     var boundsH: CGFloat?
+    var animationType: String?
+    var oscillatingRotation: Bool?
 }
 
 struct BouncingSprite {
@@ -34,12 +36,39 @@ struct BouncingSprite {
     var halfH: CGFloat
     var movingRight: Bool
     var bounds: CGRect
+    var animationType: AnimationType
+    var oscillatingRotation: Bool
+    var animTime: CGFloat
 }
 
 // MARK: - Handle side enum
 
 enum HandleSide {
     case left, right, top, bottom
+}
+
+// MARK: - Animation Types
+
+enum AnimationType: String, Codable, CaseIterable {
+    case bouncing
+    case horizontalBounce
+    case verticalBounce
+    case ellipse
+    case circular
+    case sinusoidal
+    case fixed
+    
+    var displayName: String {
+        switch self {
+        case .bouncing:         return "Rebond libre"
+        case .horizontalBounce: return "Rebond horizontal"
+        case .verticalBounce:   return "Rebond vertical"
+        case .ellipse:          return "Ellipse"
+        case .circular:         return "Cercle"
+        case .sinusoidal:       return "Sinusoïdal"
+        case .fixed:            return "Fixe"
+        }
+    }
 }
 
 // MARK: - GameScene
@@ -89,7 +118,7 @@ class GameScene: SKScene {
     private let handleSize: CGFloat = 10
     
     // Clipboard
-    private var clipboard: [(imageName: String, isAsset: Bool, velocity: CGVector, scale: CGFloat, offset: CGPoint, bounds: CGRect)] = []
+    private var clipboard: [(imageName: String, isAsset: Bool, velocity: CGVector, scale: CGFloat, offset: CGPoint, bounds: CGRect, animationType: AnimationType, oscillatingRotation: Bool)] = []
     
     // Undo
     private enum UndoAction {
@@ -231,7 +260,7 @@ class GameScene: SKScene {
         return texture
     }
     
-    private func makeBouncingSprite(node: SKSpriteNode, velocity: CGVector, imageName: String, isAsset: Bool, bounds: CGRect) -> BouncingSprite {
+    private func makeBouncingSprite(node: SKSpriteNode, velocity: CGVector, imageName: String, isAsset: Bool, bounds: CGRect, animationType: AnimationType = .bouncing, oscillatingRotation: Bool = false) -> BouncingSprite {
         BouncingSprite(
             node: node,
             velocity: velocity,
@@ -240,7 +269,10 @@ class GameScene: SKScene {
             halfW: node.size.width / 2,
             halfH: node.size.height / 2,
             movingRight: velocity.dx > 0,
-            bounds: bounds
+            bounds: bounds,
+            animationType: animationType,
+            oscillatingRotation: oscillatingRotation,
+            animTime: 0
         )
     }
     
@@ -306,41 +338,97 @@ class GameScene: SKScene {
         
         guard !isEditing, dt > 0, dt < 1 else { return }
         
-        for i in sprites.indices {
-            let node = sprites[i].node
-            var vel = sprites[i].velocity
-            let halfW = sprites[i].halfW
-            let halfH = sprites[i].halfH
-            let b = sprites[i].bounds
-            
-            var posX = node.position.x + vel.dx * dt
-            var posY = node.position.y + vel.dy * dt
-            
-            if posX <= b.minX + halfW {
-                posX = b.minX + halfW
-                vel.dx = abs(vel.dx)
-            } else if posX >= b.maxX - halfW {
-                posX = b.maxX - halfW
-                vel.dx = -abs(vel.dx)
+        sprites.withUnsafeMutableBufferPointer { buffer in
+            for i in buffer.indices {
+                let node = buffer[i].node
+                let halfW = buffer[i].halfW
+                let halfH = buffer[i].halfH
+                let b = buffer[i].bounds
+                var vel = buffer[i].velocity
+                
+                switch buffer[i].animationType {
+                case .fixed:
+                    buffer[i].animTime += dt
+                    
+                case .bouncing:
+                    var posX = node.position.x + vel.dx * dt
+                    var posY = node.position.y + vel.dy * dt
+                    if posX <= b.minX + halfW { posX = b.minX + halfW; vel.dx = abs(vel.dx) }
+                    else if posX >= b.maxX - halfW { posX = b.maxX - halfW; vel.dx = -abs(vel.dx) }
+                    if posY <= b.minY + halfH { posY = b.minY + halfH; vel.dy = abs(vel.dy) }
+                    else if posY >= b.maxY - halfH { posY = b.maxY - halfH; vel.dy = -abs(vel.dy) }
+                    node.position = CGPoint(x: posX, y: posY)
+                    buffer[i].velocity = vel
+                    let nowRight = vel.dx > 0
+                    if nowRight != buffer[i].movingRight {
+                        buffer[i].movingRight = nowRight
+                        node.xScale = nowRight ? abs(node.xScale) : -abs(node.xScale)
+                    }
+                    
+                case .horizontalBounce:
+                    var posX = node.position.x + vel.dx * dt
+                    if posX <= b.minX + halfW { posX = b.minX + halfW; vel.dx = abs(vel.dx) }
+                    else if posX >= b.maxX - halfW { posX = b.maxX - halfW; vel.dx = -abs(vel.dx) }
+                    node.position.x = posX
+                    buffer[i].velocity = vel
+                    let nowRight = vel.dx > 0
+                    if nowRight != buffer[i].movingRight {
+                        buffer[i].movingRight = nowRight
+                        node.xScale = nowRight ? abs(node.xScale) : -abs(node.xScale)
+                    }
+                    
+                case .verticalBounce:
+                    var posY = node.position.y + vel.dy * dt
+                    if posY <= b.minY + halfH { posY = b.minY + halfH; vel.dy = abs(vel.dy) }
+                    else if posY >= b.maxY - halfH { posY = b.maxY - halfH; vel.dy = -abs(vel.dy) }
+                    node.position.y = posY
+                    buffer[i].velocity = vel
+                    
+                case .ellipse:
+                    let speed = hypot(vel.dx, vel.dy)
+                    let cx = b.midX, cy = b.midY
+                    let rx = max(0, (b.width / 2) - halfW)
+                    let ry = max(0, (b.height / 2) - halfH)
+                    let perimeter = CGFloat.pi * (3 * (rx + ry) - sqrt((3 * rx + ry) * (rx + 3 * ry)))
+                    let angularSpeed = perimeter > 0 ? (speed / perimeter) * 2 * .pi : 1.0
+                    buffer[i].animTime += dt * angularSpeed
+                    let t = buffer[i].animTime
+                    node.position = CGPoint(x: cx + rx * cos(t), y: cy + ry * sin(t))
+                    
+                case .circular:
+                    let speed = hypot(vel.dx, vel.dy)
+                    let cx = b.midX, cy = b.midY
+                    let rx = max(0, (b.width / 2) - halfW)
+                    let ry = max(0, (b.height / 2) - halfH)
+                    let r = min(rx, ry)
+                    let circumference = 2 * CGFloat.pi * r
+                    let angularSpeed = circumference > 0 ? (speed / circumference) * 2 * .pi : 1.0
+                    buffer[i].animTime += dt * angularSpeed
+                    let t = buffer[i].animTime
+                    node.position = CGPoint(x: cx + r * cos(t), y: cy + r * sin(t))
+                    
+                case .sinusoidal:
+                    let speed = hypot(vel.dx, vel.dy)
+                    let cx = b.midX, cy = b.midY
+                    let rx = max(0, (b.width / 2) - halfW)
+                    let ry = max(0, (b.height / 2) - halfH)
+                    buffer[i].animTime += dt * speed * 0.01
+                    let t = buffer[i].animTime
+                    let phase = t.truncatingRemainder(dividingBy: 2 * .pi) / (2 * .pi)
+                    let linearPhase = phase < 0.5 ? phase * 2 : 2.0 - phase * 2
+                    node.position = CGPoint(
+                        x: (b.minX + halfW) + linearPhase * rx * 2,
+                        y: cy + ry * sin(t)
+                    )
+                }
+                
+                // Oscillating rotation (additive, on top of any translation)
+                if buffer[i].oscillatingRotation {
+                    let speed = hypot(vel.dx, vel.dy)
+                    let rotSpeed = max(1.0, speed * 0.02)
+                    node.zRotation = CGFloat.pi / 6 * sin(buffer[i].animTime * rotSpeed)
+                }
             }
-            
-            if posY <= b.minY + halfH {
-                posY = b.minY + halfH
-                vel.dy = abs(vel.dy)
-            } else if posY >= b.maxY - halfH {
-                posY = b.maxY - halfH
-                vel.dy = -abs(vel.dy)
-            }
-            
-            node.position = CGPoint(x: posX, y: posY)
-            
-            let nowRight = vel.dx > 0
-            if nowRight != sprites[i].movingRight {
-                sprites[i].movingRight = nowRight
-                node.xScale = nowRight ? abs(node.xScale) : -abs(node.xScale)
-            }
-            
-            sprites[i].velocity = vel
         }
         
         // Camera tracking: follow the tracked sprite
@@ -487,6 +575,35 @@ class GameScene: SKScene {
             menu.addItem(selectAllItem)
             
             if !selectedSprites.isEmpty {
+                // Animation type submenu
+                let animMenu = NSMenu(title: "Animation")
+                for animType in AnimationType.allCases {
+                    let item = NSMenuItem(title: animType.displayName, action: #selector(setAnimationType(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = animType.rawValue
+                    let allMatch = selectedSprites.allSatisfy { node in
+                        guard let idx = nodeToIndex[node] else { return false }
+                        return sprites[idx].animationType == animType
+                    }
+                    item.state = allMatch ? .on : .off
+                    animMenu.addItem(item)
+                }
+                animMenu.addItem(.separator())
+                let oscItem = NSMenuItem(title: "Rotation oscillante", action: #selector(toggleOscillatingRotation), keyEquivalent: "")
+                oscItem.target = self
+                let allOsc = selectedSprites.allSatisfy { node in
+                    guard let idx = nodeToIndex[node] else { return false }
+                    return sprites[idx].oscillatingRotation
+                }
+                oscItem.state = allOsc ? .on : .off
+                animMenu.addItem(oscItem)
+                
+                let animSubmenuItem = NSMenuItem(title: "Type d'animation", action: nil, keyEquivalent: "")
+                animSubmenuItem.submenu = animMenu
+                menu.addItem(animSubmenuItem)
+                
+                menu.addItem(.separator())
+                
                 let randomizeItem = NSMenuItem(title: "Position & vitesse aléatoires (\(selectedSprites.count))", action: #selector(randomizeSelected), keyEquivalent: "")
                 randomizeItem.target = self
                 menu.addItem(randomizeItem)
@@ -500,6 +617,34 @@ class GameScene: SKScene {
         let screenPoint = event.locationInWindow
         let viewPoint = view.convert(screenPoint, from: nil)
         menu.popUp(positioning: nil, at: viewPoint, in: view)
+    }
+    
+    // MARK: - Animation Type Actions
+    
+    @objc private func setAnimationType(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let animType = AnimationType(rawValue: rawValue) else { return }
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            sprites[idx].animationType = animType
+            sprites[idx].animTime = 0
+            if animType == .fixed {
+                node.zRotation = 0
+            }
+        }
+    }
+    
+    @objc private func toggleOscillatingRotation() {
+        let allOn = selectedSprites.allSatisfy { node in
+            guard let idx = nodeToIndex[node] else { return false }
+            return sprites[idx].oscillatingRotation
+        }
+        let newValue = !allOn
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            sprites[idx].oscillatingRotation = newValue
+            if !newValue { node.zRotation = 0 }
+        }
     }
     
     // MARK: - Load Sprites
@@ -1133,7 +1278,9 @@ class GameScene: SKScene {
                 velocity: entry.velocity,
                 scale: abs(node.yScale),
                 offset: CGPoint(x: node.position.x - centerX, y: node.position.y - centerY),
-                bounds: entry.bounds
+                bounds: entry.bounds,
+                animationType: entry.animationType,
+                oscillatingRotation: entry.oscillatingRotation
             ))
         }
     }
@@ -1160,7 +1307,7 @@ class GameScene: SKScene {
             let newBounds = item.bounds.offsetBy(dx: centerX - (item.bounds.midX - item.offset.x),
                                                   dy: centerY - (item.bounds.midY - item.offset.y))
             
-            sprites.append(makeBouncingSprite(node: sprite, velocity: item.velocity, imageName: item.imageName, isAsset: item.isAsset, bounds: newBounds))
+            sprites.append(makeBouncingSprite(node: sprite, velocity: item.velocity, imageName: item.imageName, isAsset: item.isAsset, bounds: newBounds, animationType: item.animationType, oscillatingRotation: item.oscillatingRotation))
             selectSprite(sprite, updateVisuals: false)
         }
         rebuildNodeIndex()
@@ -1184,7 +1331,7 @@ class GameScene: SKScene {
             addChild(sprite)
             
             let newBounds = entry.bounds.offsetBy(dx: offset, dy: -offset)
-            sprites.append(makeBouncingSprite(node: sprite, velocity: entry.velocity, imageName: entry.imageName, isAsset: entry.isAsset, bounds: newBounds))
+            sprites.append(makeBouncingSprite(node: sprite, velocity: entry.velocity, imageName: entry.imageName, isAsset: entry.isAsset, bounds: newBounds, animationType: entry.animationType, oscillatingRotation: entry.oscillatingRotation))
             newNodes.append(sprite)
         }
         
@@ -1243,7 +1390,9 @@ class GameScene: SKScene {
                         boundsX: entry.bounds.origin.x,
                         boundsY: entry.bounds.origin.y,
                         boundsW: entry.bounds.size.width,
-                        boundsH: entry.bounds.size.height
+                        boundsH: entry.bounds.size.height,
+                        animationType: entry.animationType.rawValue,
+                        oscillatingRotation: entry.oscillatingRotation
                     ))
                 }
                 
@@ -1289,7 +1438,9 @@ class GameScene: SKScene {
                 } else {
                     bounds = defaultBounds(around: sprite.position)
                 }
-                sprites.append(makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds))
+                let animType = spriteData.animationType.flatMap { AnimationType(rawValue: $0) } ?? .bouncing
+                let oscRot = spriteData.oscillatingRotation ?? false
+                sprites.append(makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot))
             }
             
             rebuildNodeIndex()
@@ -1337,7 +1488,9 @@ class GameScene: SKScene {
                         } else {
                             bounds = self.defaultBounds(around: sprite.position)
                         }
-                        self.sprites.append(self.makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds))
+                        let animType = spriteData.animationType.flatMap { AnimationType(rawValue: $0) } ?? .bouncing
+                        let oscRot = spriteData.oscillatingRotation ?? false
+                        self.sprites.append(self.makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot))
                     }
                     
                     self.rebuildNodeIndex()
