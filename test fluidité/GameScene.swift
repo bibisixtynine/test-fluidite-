@@ -62,6 +62,11 @@ class GameScene: SKScene {
     private var trackedNode: SKSpriteNode?
     private var trackingOffset: CGVector = .zero
     
+    // Grid
+    private var showGrid = false
+    private var gridNode: SKNode?
+    private let gridSpacing: CGFloat = 100
+    
     // Edit mode
     private var isEditing = false
     private var selectedSprites: Set<SKSpriteNode> = []
@@ -100,6 +105,104 @@ class GameScene: SKScene {
     // Group selection visual
     private var groupSelectionNode: SKShapeNode?
     private let groupSelectionName = "groupSelection"
+    
+    // MARK: - Grid
+    
+    private func updateGrid() {
+        gridNode?.removeFromParent()
+        gridNode = nil
+        guard showGrid, let view = self.view else { return }
+        
+        let zoom = cameraNode.xScale
+        let camPos = cameraNode.position
+        let halfW = view.bounds.width * zoom / 2
+        let halfH = view.bounds.height * zoom / 2
+        
+        // Visible area with margin
+        let visMinX = camPos.x - halfW - gridSpacing
+        let visMaxX = camPos.x + halfW + gridSpacing
+        let visMinY = camPos.y - halfH - gridSpacing
+        let visMaxY = camPos.y + halfH + gridSpacing
+        
+        // Snap to grid lines
+        let startX = floor(visMinX / gridSpacing) * gridSpacing
+        let endX = ceil(visMaxX / gridSpacing) * gridSpacing
+        let startY = floor(visMinY / gridSpacing) * gridSpacing
+        let endY = ceil(visMaxY / gridSpacing) * gridSpacing
+        
+        let minorPath = CGMutablePath()
+        let majorPath = CGMutablePath()
+        let minorColor = NSColor.white.withAlphaComponent(0.06)
+        let majorColor = NSColor.white.withAlphaComponent(0.15)
+        let axisColor = NSColor.white.withAlphaComponent(0.3)
+        let majorEvery = gridSpacing * 10
+        
+        // Draw grid lines
+        var x = startX
+        while x <= endX {
+            if x != 0 { // Skip origin, drawn as axis
+                let isMajor = abs(x.remainder(dividingBy: majorEvery)) < 0.1
+                let target = isMajor ? majorPath : minorPath
+                target.move(to: CGPoint(x: x, y: visMinY))
+                target.addLine(to: CGPoint(x: x, y: visMaxY))
+            }
+            x += gridSpacing
+        }
+        var y = startY
+        while y <= endY {
+            if y != 0 {
+                let isMajor = abs(y.remainder(dividingBy: majorEvery)) < 0.1
+                let target = isMajor ? majorPath : minorPath
+                target.move(to: CGPoint(x: visMinX, y: y))
+                target.addLine(to: CGPoint(x: visMaxX, y: y))
+            }
+            y += gridSpacing
+        }
+        
+        let container = SKNode()
+        container.zPosition = -1000
+        
+        let minorShape = SKShapeNode(path: minorPath)
+        minorShape.strokeColor = minorColor
+        minorShape.lineWidth = 1 * zoom
+        container.addChild(minorShape)
+        
+        let majorShape = SKShapeNode(path: majorPath)
+        majorShape.strokeColor = majorColor
+        majorShape.lineWidth = 1.5 * zoom
+        container.addChild(majorShape)
+        
+        // Draw axes (thicker)
+        let axisPath = CGMutablePath()
+        // X axis (horizontal, y=0)
+        if visMinY <= 0 && visMaxY >= 0 {
+            axisPath.move(to: CGPoint(x: visMinX, y: 0))
+            axisPath.addLine(to: CGPoint(x: visMaxX, y: 0))
+        }
+        // Y axis (vertical, x=0)
+        if visMinX <= 0 && visMaxX >= 0 {
+            axisPath.move(to: CGPoint(x: 0, y: visMinY))
+            axisPath.addLine(to: CGPoint(x: 0, y: visMaxY))
+        }
+        
+        let axisShape = SKShapeNode(path: axisPath)
+        axisShape.strokeColor = axisColor
+        axisShape.lineWidth = 2 * zoom
+        container.addChild(axisShape)
+        
+        addChild(container)
+        gridNode = container
+    }
+    
+    @objc private func toggleGrid() {
+        showGrid.toggle()
+        if showGrid {
+            updateGrid()
+        } else {
+            gridNode?.removeFromParent()
+            gridNode = nil
+        }
+    }
     
     // MARK: - Index Rebuild
     
@@ -247,6 +350,8 @@ class GameScene: SKScene {
                 y: tracked.position.y + trackingOffset.dy
             )
         }
+        
+        if showGrid { updateGrid() }
     }
     
     // MARK: - Scroll Pan (called from ViewController scroll monitor)
@@ -268,6 +373,8 @@ class GameScene: SKScene {
         
         // Accumulate velocity for inertia
         panVelocity = CGVector(dx: offsetDx, dy: offsetDy)
+        
+        if showGrid { updateGrid() }
     }
     
     func handleScrollEnded() {
@@ -280,6 +387,7 @@ class GameScene: SKScene {
         let newScale = cameraNode.xScale / (1.0 + magnification * 0.08)
         let clamped = max(0.1, min(20.0, newScale))
         cameraNode.setScale(clamped)
+        if showGrid { updateGrid() }
     }
     
     // MARK: - Zoom to Fit
@@ -365,6 +473,11 @@ class GameScene: SKScene {
         let perfItem = NSMenuItem(title: perfTitle, action: #selector(togglePerformanceDisplay), keyEquivalent: "")
         perfItem.target = self
         menu.addItem(perfItem)
+        
+        let gridTitle = showGrid ? "Masquer le quadrillage" : "Afficher le quadrillage"
+        let gridItem = NSMenuItem(title: gridTitle, action: #selector(toggleGrid), keyEquivalent: "")
+        gridItem.target = self
+        menu.addItem(gridItem)
         
         if isEditing {
             menu.addItem(.separator())
