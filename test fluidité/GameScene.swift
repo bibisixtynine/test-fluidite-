@@ -232,7 +232,7 @@ class GameScene: SKScene {
     // MARK: - Magnify (Zoom)
     
     func handleMagnification(_ magnification: CGFloat) {
-        let newScale = cameraNode.xScale / (1.0 + magnification)
+        let newScale = cameraNode.xScale / (1.0 + magnification * 0.08)
         let clamped = max(0.1, min(5.0, newScale))
         cameraNode.setScale(clamped)
     }
@@ -435,7 +435,7 @@ class GameScene: SKScene {
             
             let rect = SKShapeNode(rect: CGRect(origin: location, size: .zero))
             rect.strokeColor = .cyan
-            rect.lineWidth = 1
+            rect.lineWidth = 1 * cameraNode.xScale
             rect.fillColor = NSColor.cyan.withAlphaComponent(0.1)
             rect.zPosition = 1000
             selectionRect = rect
@@ -465,15 +465,19 @@ class GameScene: SKScene {
             return
         }
         
-        // Sprite dragging
+        // Sprite dragging (move sprite + its bounds together)
         if isDraggingSprites {
             let dx = current.x - dragLastPoint.x
             let dy = current.y - dragLastPoint.y
             for node in selectedSprites {
                 node.position.x += dx
                 node.position.y += dy
+                if let idx = sprites.firstIndex(where: { $0.node === node }) {
+                    sprites[idx].bounds = sprites[idx].bounds.offsetBy(dx: dx, dy: dy)
+                }
             }
             dragLastPoint = current
+            updateBoundsVisuals()
             return
         }
         
@@ -490,7 +494,7 @@ class GameScene: SKScene {
         selectionRect?.removeFromParent()
         let shape = SKShapeNode(rect: rect)
         shape.strokeColor = .cyan
-        shape.lineWidth = 1
+        shape.lineWidth = 1 * cameraNode.xScale
         shape.fillColor = NSColor.cyan.withAlphaComponent(0.1)
         shape.zPosition = 1000
         selectionRect = shape
@@ -578,6 +582,8 @@ class GameScene: SKScene {
         
         guard isEditing else { return }
         
+        let zoom = cameraNode.xScale
+        
         for i in sprites.indices {
             guard selectedSprites.contains(sprites[i].node) else { continue }
             let b = sprites[i].bounds
@@ -585,12 +591,12 @@ class GameScene: SKScene {
             // Draw bounds rectangle
             let rectNode = SKShapeNode(rect: b)
             rectNode.strokeColor = .orange
-            rectNode.lineWidth = 1.5
+            rectNode.lineWidth = 1.5 * zoom
             rectNode.fillColor = .clear
             rectNode.zPosition = 999
             rectNode.name = "\(boundsRectPrefix)\(i)"
             // Dashed line
-            let pattern: [CGFloat] = [8, 4]
+            let pattern: [CGFloat] = [8 * zoom, 4 * zoom]
             rectNode.path = {
                 let path = CGMutablePath()
                 path.addRect(b)
@@ -599,6 +605,7 @@ class GameScene: SKScene {
             addChild(rectNode)
             
             // Draw 4 handles
+            let hSize = handleSize * zoom
             let sides: [(CGPoint, String)] = [
                 (CGPoint(x: b.minX, y: b.midY), "\(handlePrefix)left_\(i)"),
                 (CGPoint(x: b.maxX, y: b.midY), "\(handlePrefix)right_\(i)"),
@@ -607,10 +614,10 @@ class GameScene: SKScene {
             ]
             
             for (pos, name) in sides {
-                let handle = SKShapeNode(rectOf: CGSize(width: handleSize, height: handleSize))
+                let handle = SKShapeNode(rectOf: CGSize(width: hSize, height: hSize))
                 handle.fillColor = .orange
                 handle.strokeColor = .white
-                handle.lineWidth = 1
+                handle.lineWidth = 1 * zoom
                 handle.position = pos
                 handle.zPosition = 1001
                 handle.name = name
@@ -648,7 +655,7 @@ class GameScene: SKScene {
             height: node.texture?.size().height ?? node.size.height / abs(node.yScale)
         ))
         border.strokeColor = .cyan
-        border.lineWidth = 2 / abs(node.xScale)
+        border.lineWidth = 2 * cameraNode.xScale / abs(node.xScale)
         border.fillColor = .clear
         border.name = highlightName
         border.zPosition = 1
@@ -824,30 +831,46 @@ class GameScene: SKScene {
     }
     
     @objc private func saveScene() {
-        var dataList: [SpriteData] = []
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "scene.json"
+        panel.title = "Sauvegarder la scène"
+        panel.prompt = "Sauvegarder"
         
-        for entry in sprites {
-            let node = entry.node
-            dataList.append(SpriteData(
-                imageName: entry.imageName,
-                isAsset: entry.isAsset,
-                posX: node.position.x,
-                posY: node.position.y,
-                velDx: entry.velocity.dx,
-                velDy: entry.velocity.dy,
-                scale: abs(node.yScale),
-                boundsX: entry.bounds.origin.x,
-                boundsY: entry.bounds.origin.y,
-                boundsW: entry.bounds.size.width,
-                boundsH: entry.bounds.size.height
-            ))
-        }
-        
-        do {
-            let data = try JSONEncoder().encode(dataList)
-            try data.write(to: sceneFilePath)
-        } catch {
-            print("Save error: \(error)")
+        panel.begin { [weak self] response in
+            guard let self = self, response == .OK, let url = panel.url else { return }
+            
+            DispatchQueue.main.async {
+                var dataList: [SpriteData] = []
+                
+                for entry in self.sprites {
+                    let node = entry.node
+                    dataList.append(SpriteData(
+                        imageName: entry.imageName,
+                        isAsset: entry.isAsset,
+                        posX: node.position.x,
+                        posY: node.position.y,
+                        velDx: entry.velocity.dx,
+                        velDy: entry.velocity.dy,
+                        scale: abs(node.yScale),
+                        boundsX: entry.bounds.origin.x,
+                        boundsY: entry.bounds.origin.y,
+                        boundsW: entry.bounds.size.width,
+                        boundsH: entry.bounds.size.height
+                    ))
+                }
+                
+                do {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = .prettyPrinted
+                    let data = try encoder.encode(dataList)
+                    try data.write(to: url)
+                    // Also save to app support for auto-load on next launch
+                    try data.write(to: self.sceneFilePath)
+                } catch {
+                    print("Save error: \(error)")
+                }
+            }
         }
     }
     
