@@ -93,6 +93,7 @@ class GameScene: SKScene {
     
     // Grid
     private var showGrid = false
+    private var gridAboveSprites = false
     private var gridNode: SKNode?
     private let gridSpacing: CGFloat = 100
     
@@ -189,7 +190,7 @@ class GameScene: SKScene {
         }
         
         let container = SKNode()
-        container.zPosition = -1000
+        container.zPosition = gridAboveSprites ? 500 : -1000
         
         let minorShape = SKShapeNode(path: minorPath)
         minorShape.strokeColor = minorColor
@@ -231,6 +232,11 @@ class GameScene: SKScene {
             gridNode?.removeFromParent()
             gridNode = nil
         }
+    }
+    
+    @objc private func toggleGridLayer() {
+        gridAboveSprites.toggle()
+        if showGrid { updateGrid() }
     }
     
     // MARK: - Index Rebuild
@@ -567,6 +573,13 @@ class GameScene: SKScene {
         gridItem.target = self
         menu.addItem(gridItem)
         
+        if showGrid {
+            let layerTitle = gridAboveSprites ? "Quadrillage derrière les sprites" : "Quadrillage devant les sprites"
+            let layerItem = NSMenuItem(title: layerTitle, action: #selector(toggleGridLayer), keyEquivalent: "")
+            layerItem.target = self
+            menu.addItem(layerItem)
+        }
+        
         if isEditing {
             menu.addItem(.separator())
             
@@ -601,6 +614,60 @@ class GameScene: SKScene {
                 let animSubmenuItem = NSMenuItem(title: "Type d'animation", action: nil, keyEquivalent: "")
                 animSubmenuItem.submenu = animMenu
                 menu.addItem(animSubmenuItem)
+                
+                // Z-order submenu
+                let zOrderMenu = NSMenu(title: "Ordre")
+                let bringFrontItem = NSMenuItem(title: "Passer en avant-plan", action: #selector(bringSelectionToFront), keyEquivalent: "")
+                bringFrontItem.target = self
+                zOrderMenu.addItem(bringFrontItem)
+                let sendBackItem = NSMenuItem(title: "Passer en arrière-plan", action: #selector(sendSelectionToBack), keyEquivalent: "")
+                sendBackItem.target = self
+                zOrderMenu.addItem(sendBackItem)
+                let zOrderSubmenuItem = NSMenuItem(title: "Ordre d'affichage", action: nil, keyEquivalent: "")
+                zOrderSubmenuItem.submenu = zOrderMenu
+                menu.addItem(zOrderSubmenuItem)
+                
+                // Scale submenu
+                let scaleMenu = NSMenu(title: "Échelle")
+                for factor in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0] {
+                    let pct = Int(factor * 100)
+                    let item = NSMenuItem(title: "\(pct)%", action: #selector(setSelectionScale(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = factor
+                    scaleMenu.addItem(item)
+                }
+                scaleMenu.addItem(.separator())
+                let scaleUpItem = NSMenuItem(title: "Agrandir ×1.5", action: #selector(scaleSelectionUp), keyEquivalent: "")
+                scaleUpItem.target = self
+                scaleMenu.addItem(scaleUpItem)
+                let scaleDownItem = NSMenuItem(title: "Réduire ×0.67", action: #selector(scaleSelectionDown), keyEquivalent: "")
+                scaleDownItem.target = self
+                scaleMenu.addItem(scaleDownItem)
+                let scaleSubmenuItem = NSMenuItem(title: "Échelle", action: nil, keyEquivalent: "")
+                scaleSubmenuItem.submenu = scaleMenu
+                menu.addItem(scaleSubmenuItem)
+                
+                // Speed submenu
+                let speedMenu = NSMenu(title: "Vitesse")
+                for factor in [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0] {
+                    let label: String
+                    if factor == 1.0 { label = "×1 (normale)" }
+                    else { label = "×\(factor == floor(factor) ? String(Int(factor)) : String(factor))" }
+                    let item = NSMenuItem(title: label, action: #selector(setSelectionSpeed(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = factor
+                    speedMenu.addItem(item)
+                }
+                speedMenu.addItem(.separator())
+                let speedUpItem = NSMenuItem(title: "Accélérer ×2", action: #selector(speedSelectionUp), keyEquivalent: "")
+                speedUpItem.target = self
+                speedMenu.addItem(speedUpItem)
+                let speedDownItem = NSMenuItem(title: "Ralentir ÷2", action: #selector(speedSelectionDown), keyEquivalent: "")
+                speedDownItem.target = self
+                speedMenu.addItem(speedDownItem)
+                let speedSubmenuItem = NSMenuItem(title: "Vitesse", action: nil, keyEquivalent: "")
+                speedSubmenuItem.submenu = speedMenu
+                menu.addItem(speedSubmenuItem)
                 
                 menu.addItem(.separator())
                 
@@ -644,6 +711,92 @@ class GameScene: SKScene {
             guard let idx = nodeToIndex[node] else { continue }
             sprites[idx].oscillatingRotation = newValue
             if !newValue { node.zRotation = 0 }
+        }
+    }
+    
+    // MARK: - Z-Order Actions
+    
+    @objc private func bringSelectionToFront() {
+        let maxZ = sprites.map { $0.node.zPosition }.max() ?? 0
+        for node in selectedSprites {
+            node.zPosition = maxZ + 1
+        }
+    }
+    
+    @objc private func sendSelectionToBack() {
+        let minZ = sprites.map { $0.node.zPosition }.min() ?? 0
+        for node in selectedSprites {
+            node.zPosition = minZ - 1
+        }
+    }
+    
+    // MARK: - Scale Actions
+    
+    @objc private func setSelectionScale(_ sender: NSMenuItem) {
+        guard let factor = sender.representedObject as? Double else { return }
+        let scale = CGFloat(factor)
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            let sign: CGFloat = node.xScale < 0 ? -1 : 1
+            node.xScale = sign * scale
+            node.yScale = scale
+            sprites[idx].halfW = node.size.width * scale / 2
+            sprites[idx].halfH = node.size.height * scale / 2
+        }
+    }
+    
+    @objc private func scaleSelectionUp() {
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            let sign: CGFloat = node.xScale < 0 ? -1 : 1
+            let newScale = abs(node.yScale) * 1.5
+            node.xScale = sign * newScale
+            node.yScale = newScale
+            sprites[idx].halfW = node.size.width * newScale / 2
+            sprites[idx].halfH = node.size.height * newScale / 2
+        }
+    }
+    
+    @objc private func scaleSelectionDown() {
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            let sign: CGFloat = node.xScale < 0 ? -1 : 1
+            let newScale = abs(node.yScale) * 0.67
+            node.xScale = sign * newScale
+            node.yScale = newScale
+            sprites[idx].halfW = node.size.width * newScale / 2
+            sprites[idx].halfH = node.size.height * newScale / 2
+        }
+    }
+    
+    // MARK: - Speed Actions
+    
+    @objc private func setSelectionSpeed(_ sender: NSMenuItem) {
+        guard let factor = sender.representedObject as? Double else { return }
+        let multiplier = CGFloat(factor)
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            let vel = sprites[idx].velocity
+            let currentSpeed = hypot(vel.dx, vel.dy)
+            guard currentSpeed > 0 else { continue }
+            let ratio = (140.0 * multiplier) / currentSpeed
+            sprites[idx].velocity = CGVector(dx: vel.dx * ratio, dy: vel.dy * ratio)
+        }
+    }
+    
+    @objc private func speedSelectionUp() {
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            sprites[idx].velocity.dx *= 2
+            sprites[idx].velocity.dy *= 2
+        }
+    }
+    
+    @objc private func speedSelectionDown() {
+        for node in selectedSprites {
+            guard let idx = nodeToIndex[node] else { continue }
+            sprites[idx].velocity.dx *= 0.5
+            sprites[idx].velocity.dy *= 0.5
         }
     }
     
