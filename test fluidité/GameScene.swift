@@ -365,10 +365,11 @@ class GameScene: SKScene {
     }
     
     @objc private func selectAllSprites() {
-        clearSelection()
+        clearSelection(updateVisuals: false)
         for entry in sprites {
-            selectSprite(entry.node)
+            selectSprite(entry.node, updateVisuals: false)
         }
+        if isEditing { updateBoundsVisuals() }
     }
     
     @objc private func randomizeSelected() {
@@ -540,9 +541,10 @@ class GameScene: SKScene {
         
         for entry in sprites {
             if rect.contains(entry.node.position) {
-                selectSprite(entry.node)
+                selectSprite(entry.node, updateVisuals: false)
             }
         }
+        if isEditing { updateBoundsVisuals() }
     }
     
     // MARK: - Handle Hit Test
@@ -581,6 +583,9 @@ class GameScene: SKScene {
         removeBoundsVisuals()
         
         guard isEditing else { return }
+        
+        // Skip individual bounds visuals when too many sprites selected (perf)
+        guard selectedSprites.count <= 50 else { return }
         
         let zoom = cameraNode.xScale
         
@@ -628,24 +633,24 @@ class GameScene: SKScene {
     
     // MARK: - Selection Helpers
     
-    private func selectSprite(_ node: SKSpriteNode) {
+    private func selectSprite(_ node: SKSpriteNode, updateVisuals: Bool = true) {
         selectedSprites.insert(node)
         addHighlight(to: node)
-        if isEditing { updateBoundsVisuals() }
+        if updateVisuals && isEditing { updateBoundsVisuals() }
     }
     
-    private func deselectSprite(_ node: SKSpriteNode) {
+    private func deselectSprite(_ node: SKSpriteNode, updateVisuals: Bool = true) {
         selectedSprites.remove(node)
         removeHighlight(from: node)
-        if isEditing { updateBoundsVisuals() }
+        if updateVisuals && isEditing { updateBoundsVisuals() }
     }
     
-    private func clearSelection() {
+    private func clearSelection(updateVisuals: Bool = true) {
         for node in selectedSprites {
             removeHighlight(from: node)
         }
         selectedSprites.removeAll()
-        if isEditing { updateBoundsVisuals() }
+        if updateVisuals && isEditing { updateBoundsVisuals() }
     }
     
     private func addHighlight(to node: SKSpriteNode) {
@@ -764,7 +769,7 @@ class GameScene: SKScene {
         let centerX = camPos.x + CGFloat.random(in: -30...30)
         let centerY = camPos.y + CGFloat.random(in: -30...30)
         
-        clearSelection()
+        clearSelection(updateVisuals: false)
         
         for item in clipboard {
             guard let texture = cachedTexture(imageName: item.imageName, isAsset: item.isAsset) else { continue }
@@ -780,8 +785,9 @@ class GameScene: SKScene {
                                                   dy: centerY - (item.bounds.midY - item.offset.y))
             
             sprites.append(makeBouncingSprite(node: sprite, velocity: item.velocity, imageName: item.imageName, isAsset: item.isAsset, bounds: newBounds))
-            selectSprite(sprite)
+            selectSprite(sprite, updateVisuals: false)
         }
+        if isEditing { updateBoundsVisuals() }
     }
     
     private func duplicateSelection() {
@@ -804,10 +810,11 @@ class GameScene: SKScene {
             newNodes.append(sprite)
         }
         
-        clearSelection()
+        clearSelection(updateVisuals: false)
         for node in newNodes {
-            selectSprite(node)
+            selectSprite(node, updateVisuals: false)
         }
+        if isEditing { updateBoundsVisuals() }
     }
     
     // MARK: - Persistence
