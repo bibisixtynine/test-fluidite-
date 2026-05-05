@@ -10,7 +10,7 @@ import SpriteKit
 
 // MARK: - ViewController
 
-class ViewController: NSViewController {
+class ViewController: NSViewController, NSWindowDelegate {
 
     @IBOutlet var skView: SKView!
     
@@ -22,6 +22,8 @@ class ViewController: NSViewController {
         let scene = GameScene(size: skView.bounds.size)
         scene.scaleMode = .resizeFill
         skView.presentScene(scene)
+        skView.ignoresSiblingOrder = true
+        skView.preferredFramesPerSecond = 120
         
         // Pinch to zoom
         let magnifyGesture = NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify(_:)))
@@ -32,6 +34,16 @@ class ViewController: NSViewController {
             self?.handleScroll(event)
             return event
         }
+    }
+    
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        view.window?.delegate = self
+    }
+    
+    // Disable macOS fullscreen "optimization" that causes SpriteKit stutter
+    func window(_ window: NSWindow, willUseFullScreenContentSize proposedSize: NSSize) -> NSSize {
+        return NSSize(width: proposedSize.width, height: proposedSize.height - 1)
     }
     
     deinit {
