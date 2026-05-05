@@ -15,6 +15,7 @@ class ViewController: NSViewController, NSWindowDelegate {
     @IBOutlet var skView: SKView!
     
     private var scrollMonitor: Any?
+    private var keyMonitor: Any?
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -24,6 +25,9 @@ class ViewController: NSViewController, NSWindowDelegate {
         skView.presentScene(scene)
         skView.ignoresSiblingOrder = true
         skView.preferredFramesPerSecond = 120
+        skView.showsFPS = true
+        skView.showsNodeCount = true
+        skView.showsDrawCount = true
         
         // Pinch to zoom
         let magnifyGesture = NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify(_:)))
@@ -32,6 +36,20 @@ class ViewController: NSViewController, NSWindowDelegate {
         // Two-finger scroll for pan — intercept at app level
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             self?.handleScroll(event)
+            return event
+        }
+        
+        // Intercept Cmd+key before macOS consumes them
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self,
+                  event.modifierFlags.contains(.command),
+                  let scene = self.skView.scene as? GameScene else { return event }
+            let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+            let shift = event.modifierFlags.contains(.shift)
+            if ["z", "y", "c", "v", "d", "a"].contains(key) {
+                scene.handleCommandKey(key, shift: shift)
+                return nil // consume event
+            }
             return event
         }
     }
@@ -48,6 +66,9 @@ class ViewController: NSViewController, NSWindowDelegate {
     
     deinit {
         if let monitor = scrollMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
         }
     }

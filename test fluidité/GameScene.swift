@@ -61,11 +61,13 @@ class GameScene: SKScene {
     // Edit mode
     private var isEditing = false
     private var selectedSprites: Set<SKSpriteNode> = []
+    private var cachedSelectionBBox: CGRect = .null
     private var selectionRect: SKShapeNode?
     private var selectionOrigin: CGPoint = .zero
     private var isDraggingSelection = false
     private var isDraggingSprites = false
     private var dragLastPoint: CGPoint = .zero
+    private var dragStartPositions: [(node: SKSpriteNode, oldPos: CGPoint, oldBounds: CGRect)] = []
     
     // Handle dragging
     private var isDraggingHandle = false
@@ -81,10 +83,28 @@ class GameScene: SKScene {
     private var clipboard: [(imageName: String, isAsset: Bool, velocity: CGVector, scale: CGFloat, offset: CGPoint, bounds: CGRect)] = []
     
     // Undo
-    private var undoStack: [[BouncingSprite]] = []
+    private enum UndoAction {
+        case delete([BouncingSprite])
+        case move([(node: SKSpriteNode, oldPos: CGPoint, oldBounds: CGRect)])
+    }
+    private var undoStack: [UndoAction] = []
+    private var redoStack: [UndoAction] = []
     
-    // Highlight
-    private let highlightName = "selectionHighlight"
+    // Fast node-to-index lookup
+    private var nodeToIndex: [SKSpriteNode: Int] = [:]
+    
+    // Group selection visual
+    private var groupSelectionNode: SKShapeNode?
+    private let groupSelectionName = "groupSelection"
+    
+    // MARK: - Index Rebuild
+    
+    private func rebuildNodeIndex() {
+        nodeToIndex.removeAll(keepingCapacity: true)
+        for i in sprites.indices {
+            nodeToIndex[sprites[i].node] = i
+        }
+    }
     
     // MARK: - Texture Cache
     
@@ -149,6 +169,7 @@ class GameScene: SKScene {
         let vel = CGVector(dx: 150, dy: 100)
         let bounds = defaultBounds(around: pos)
         sprites.append(makeBouncingSprite(node: robot, velocity: vel, imageName: "robot", isAsset: true, bounds: bounds))
+        rebuildNodeIndex()
     }
     
     // MARK: - Update Loop
@@ -370,13 +391,19 @@ class GameScene: SKScene {
         let spriteScale = scale ?? (targetHeight / sprite.size.height)
         sprite.setScale(spriteScale)
         
-        // Random position within camera view
+        // Random position within visible screen area
         let camPos = cameraNode.position
-        let viewHalfW = (self.view?.bounds.width ?? 800) * cameraNode.xScale / 2
-        let viewHalfH = (self.view?.bounds.height ?? 600) * cameraNode.yScale / 2
+        let zoom = cameraNode.xScale
+        let viewHalfW = (self.view?.bounds.width ?? 800) * zoom / 2
+        let viewHalfH = (self.view?.bounds.height ?? 600) * zoom / 2
+        let margin: CGFloat = 50 * zoom
+        let minX = camPos.x - viewHalfW + margin
+        let maxX = camPos.x + viewHalfW - margin
+        let minY = camPos.y - viewHalfH + margin
+        let maxY = camPos.y + viewHalfH - margin
         let pos = position ?? CGPoint(
-            x: CGFloat.random(in: (camPos.x - viewHalfW + 50)...(camPos.x + viewHalfW - 50)),
-            y: CGFloat.random(in: (camPos.y - viewHalfH + 50)...(camPos.y + viewHalfH - 50))
+            x: minX < maxX ? CGFloat.random(in: minX...maxX) : camPos.x,
+            y: minY < maxY ? CGFloat.random(in: minY...maxY) : camPos.y
         )
         sprite.position = pos
         addChild(sprite)
@@ -388,6 +415,7 @@ class GameScene: SKScene {
         
         let spriteBounds = bounds ?? defaultBounds(around: pos)
         sprites.append(makeBouncingSprite(node: sprite, velocity: vel, imageName: imageName, isAsset: false, bounds: spriteBounds))
+        rebuildNodeIndex()
     }
     
     // MARK: - Edit Mode
@@ -409,12 +437,13 @@ class GameScene: SKScene {
         for entry in sprites {
             selectSprite(entry.node, updateVisuals: false)
         }
+        updateGroupSelectionVisual()
         if isEditing { updateBoundsVisuals() }
     }
     
     @objc private func randomizeSelected() {
         for node in selectedSprites {
-            guard let idx = sprites.firstIndex(where: { $0.node === node }) else { continue }
+            guard let idx = nodeToIndex[node] else { continue }
             
             let b = sprites[idx].bounds
             let halfW = sprites[idx].halfW
@@ -435,6 +464,8 @@ class GameScene: SKScene {
                 dy: CGFloat.random(in: 80...200) * (Bool.random() ? 1 : -1)
             )
         }
+        rebuildSelectionBBox()
+        updateGroupSelectionVisual()
     }
     
     // MARK: - Mouse Events
@@ -445,15 +476,26 @@ class GameScene: SKScene {
         let location = event.location(in: self)
         let shift = event.modifierFlags.contains(.shift)
         
-        // 1. Check if clicking on a handle
-        if let (spriteIdx, side) = handleHitTest(at: location) {
+        // 1. If there's a selection and we click inside it, drag the group (fast path)
+        if !shift && !selectedSprites.isEmpty && cachedSelectionBBox.contains(location) {
+            isDraggingSprites = true
+            dragLastPoint = location
+            saveDragStartPositions()
+            // Change color to indicate active drag
+            groupSelectionNode?.strokeColor = .green
+            groupSelectionNode?.fillColor = NSColor.green.withAlphaComponent(0.08)
+            return
+        }
+        
+        // 2. Check if clicking on a handle (only when bounds are visible, i.e. 1 selected)
+        if selectedSprites.count == 1, let (spriteIdx, side) = handleHitTest(at: location) {
             isDraggingHandle = true
             activeHandleSpriteIndex = spriteIdx
             activeHandleSide = side
             return
         }
         
-        // 2. Check if clicking on a sprite
+        // 3. Check if clicking on an individual sprite (slower for large counts)
         let clickedNode = sprites.first(where: { $0.node.contains(location) })?.node
         
         if let node = clickedNode {
@@ -464,13 +506,12 @@ class GameScene: SKScene {
                     selectSprite(node)
                 }
             } else {
-                if !selectedSprites.contains(node) {
-                    clearSelection()
-                    selectSprite(node)
-                }
+                clearSelection()
+                selectSprite(node)
             }
             isDraggingSprites = true
             dragLastPoint = location
+            saveDragStartPositions()
         } else {
             // 3. Start rectangle selection
             if !shift {
@@ -519,12 +560,14 @@ class GameScene: SKScene {
             for node in selectedSprites {
                 node.position.x += dx
                 node.position.y += dy
-                if let idx = sprites.firstIndex(where: { $0.node === node }) {
+                if let idx = nodeToIndex[node] {
                     sprites[idx].bounds = sprites[idx].bounds.offsetBy(dx: dx, dy: dy)
                 }
             }
+            cachedSelectionBBox = cachedSelectionBBox.offsetBy(dx: dx, dy: dy)
+            groupSelectionNode?.position.x += dx
+            groupSelectionNode?.position.y += dy
             dragLastPoint = current
-            updateBoundsVisuals()
             return
         }
         
@@ -559,6 +602,15 @@ class GameScene: SKScene {
         
         if isDraggingSprites {
             isDraggingSprites = false
+            // Push undo if sprites actually moved
+            if let first = dragStartPositions.first,
+               first.node.position != first.oldPos {
+                undoStack.append(.move(dragStartPositions))
+                redoStack.removeAll()
+            }
+            dragStartPositions.removeAll()
+            rebuildSelectionBBox()
+            updateGroupSelectionVisual()
             updateBoundsVisuals()
             return
         }
@@ -590,6 +642,7 @@ class GameScene: SKScene {
                 selectSprite(entry.node, updateVisuals: false)
             }
         }
+        updateGroupSelectionVisual()
         if isEditing { updateBoundsVisuals() }
     }
     
@@ -630,8 +683,8 @@ class GameScene: SKScene {
         
         guard isEditing else { return }
         
-        // Skip individual bounds visuals when too many sprites selected (perf)
-        guard selectedSprites.count <= 50 else { return }
+        // Only show individual bounds for a single selected sprite
+        guard selectedSprites.count == 1 else { return }
         
         let zoom = cameraNode.xScale
         
@@ -677,44 +730,78 @@ class GameScene: SKScene {
         }
     }
     
+    private func rebuildSelectionBBox() {
+        guard !selectedSprites.isEmpty else {
+            cachedSelectionBBox = .null
+            return
+        }
+        var minX = CGFloat.infinity, minY = CGFloat.infinity
+        var maxX = -CGFloat.infinity, maxY = -CGFloat.infinity
+        for node in selectedSprites {
+            let pos = node.position
+            let hw = node.size.width / 2
+            let hh = node.size.height / 2
+            minX = min(minX, pos.x - hw)
+            minY = min(minY, pos.y - hh)
+            maxX = max(maxX, pos.x + hw)
+            maxY = max(maxY, pos.y + hh)
+        }
+        cachedSelectionBBox = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+    
+    private func expandSelectionBBox(with node: SKSpriteNode) {
+        let pos = node.position
+        let hw = node.size.width / 2
+        let hh = node.size.height / 2
+        let nodeRect = CGRect(x: pos.x - hw, y: pos.y - hh, width: hw * 2, height: hh * 2)
+        if cachedSelectionBBox.isNull {
+            cachedSelectionBBox = nodeRect
+        } else {
+            cachedSelectionBBox = cachedSelectionBBox.union(nodeRect)
+        }
+    }
+    
     // MARK: - Selection Helpers
     
     private func selectSprite(_ node: SKSpriteNode, updateVisuals: Bool = true) {
         selectedSprites.insert(node)
-        addHighlight(to: node)
+        expandSelectionBBox(with: node)
+        if updateVisuals { updateGroupSelectionVisual() }
         if updateVisuals && isEditing { updateBoundsVisuals() }
     }
     
     private func deselectSprite(_ node: SKSpriteNode, updateVisuals: Bool = true) {
         selectedSprites.remove(node)
-        removeHighlight(from: node)
+        rebuildSelectionBBox()
+        if updateVisuals { updateGroupSelectionVisual() }
         if updateVisuals && isEditing { updateBoundsVisuals() }
     }
     
     private func clearSelection(updateVisuals: Bool = true) {
-        for node in selectedSprites {
-            removeHighlight(from: node)
-        }
         selectedSprites.removeAll()
+        cachedSelectionBBox = .null
+        removeGroupSelectionVisual()
         if updateVisuals && isEditing { updateBoundsVisuals() }
     }
     
-    private func addHighlight(to node: SKSpriteNode) {
-        guard node.childNode(withName: highlightName) == nil else { return }
-        let border = SKShapeNode(rectOf: CGSize(
-            width: node.texture?.size().width ?? node.size.width / abs(node.xScale),
-            height: node.texture?.size().height ?? node.size.height / abs(node.yScale)
-        ))
-        border.strokeColor = .cyan
-        border.lineWidth = 2 * cameraNode.xScale / abs(node.xScale)
-        border.fillColor = .clear
-        border.name = highlightName
-        border.zPosition = 1
-        node.addChild(border)
+    private func updateGroupSelectionVisual() {
+        removeGroupSelectionVisual()
+        guard !selectedSprites.isEmpty, !cachedSelectionBBox.isNull else { return }
+        
+        let zoom = cameraNode.xScale
+        let shape = SKShapeNode(rect: cachedSelectionBBox)
+        shape.strokeColor = .cyan
+        shape.lineWidth = 2 * zoom
+        shape.fillColor = NSColor.cyan.withAlphaComponent(0.08)
+        shape.zPosition = 998
+        shape.name = groupSelectionName
+        addChild(shape)
+        groupSelectionNode = shape
     }
     
-    private func removeHighlight(from node: SKSpriteNode) {
-        node.childNode(withName: highlightName)?.removeFromParent()
+    private func removeGroupSelectionVisual() {
+        groupSelectionNode?.removeFromParent()
+        groupSelectionNode = nil
     }
     
     // MARK: - Delete & Undo
@@ -723,29 +810,109 @@ class GameScene: SKScene {
         guard !selectedSprites.isEmpty else { return }
         
         var deleted: [BouncingSprite] = []
+        var kept: [BouncingSprite] = []
         
-        for node in selectedSprites {
-            if let idx = sprites.firstIndex(where: { $0.node === node }) {
-                deleted.append(sprites[idx])
-                sprites.remove(at: idx)
-                node.removeFromParent()
+        for entry in sprites {
+            if selectedSprites.contains(entry.node) {
+                deleted.append(entry)
+                entry.node.removeFromParent()
+            } else {
+                kept.append(entry)
             }
         }
         
+        sprites = kept
+        rebuildNodeIndex()
         selectedSprites.removeAll()
+        cachedSelectionBBox = .null
+        removeGroupSelectionVisual()
         updateBoundsVisuals()
         
         if !deleted.isEmpty {
-            undoStack.append(deleted)
+            undoStack.append(.delete(deleted))
+            redoStack.removeAll()
         }
     }
     
-    private func undoLastDelete() {
-        guard let lastDeleted = undoStack.popLast() else { return }
+    private func saveDragStartPositions() {
+        dragStartPositions.removeAll()
+        for node in selectedSprites {
+            if let idx = nodeToIndex[node] {
+                dragStartPositions.append((node: node, oldPos: node.position, oldBounds: sprites[idx].bounds))
+            }
+        }
+    }
+    
+    private func undoLast() {
+        guard let action = undoStack.popLast() else { return }
         
-        for entry in lastDeleted {
-            addChild(entry.node)
-            sprites.append(entry)
+        switch action {
+        case .delete(let deleted):
+            for entry in deleted {
+                addChild(entry.node)
+                sprites.append(entry)
+            }
+            rebuildNodeIndex()
+            redoStack.append(action)
+            
+        case .move(let positions):
+            // Save current positions for redo
+            var currentPositions: [(node: SKSpriteNode, oldPos: CGPoint, oldBounds: CGRect)] = []
+            for item in positions {
+                if let idx = nodeToIndex[item.node] {
+                    currentPositions.append((node: item.node, oldPos: item.node.position, oldBounds: sprites[idx].bounds))
+                }
+            }
+            redoStack.append(.move(currentPositions))
+            // Restore old positions
+            for item in positions {
+                item.node.position = item.oldPos
+                if let idx = nodeToIndex[item.node] {
+                    sprites[idx].bounds = item.oldBounds
+                }
+            }
+            rebuildSelectionBBox()
+            updateGroupSelectionVisual()
+        }
+        updateBoundsVisuals()
+    }
+    
+    private func redoLast() {
+        guard let action = redoStack.popLast() else { return }
+        
+        switch action {
+        case .delete(let deleted):
+            // Re-delete the sprites
+            let deletedNodes = Set(deleted.map { $0.node })
+            for entry in deleted {
+                entry.node.removeFromParent()
+            }
+            sprites.removeAll { deletedNodes.contains($0.node) }
+            rebuildNodeIndex()
+            selectedSprites.subtract(deletedNodes)
+            cachedSelectionBBox = .null
+            rebuildSelectionBBox()
+            removeGroupSelectionVisual()
+            undoStack.append(action)
+            
+        case .move(let positions):
+            // Save current positions for undo
+            var currentPositions: [(node: SKSpriteNode, oldPos: CGPoint, oldBounds: CGRect)] = []
+            for item in positions {
+                if let idx = nodeToIndex[item.node] {
+                    currentPositions.append((node: item.node, oldPos: item.node.position, oldBounds: sprites[idx].bounds))
+                }
+            }
+            undoStack.append(.move(currentPositions))
+            // Apply redo positions
+            for item in positions {
+                item.node.position = item.oldPos
+                if let idx = nodeToIndex[item.node] {
+                    sprites[idx].bounds = item.oldBounds
+                }
+            }
+            rebuildSelectionBBox()
+            updateGroupSelectionVisual()
         }
         updateBoundsVisuals()
     }
@@ -754,29 +921,25 @@ class GameScene: SKScene {
     
     override func keyDown(with event: NSEvent) {
         if isEditing {
-            let cmd = event.modifierFlags.contains(.command)
-            let key = event.charactersIgnoringModifiers ?? ""
-            
             if event.keyCode == 51 || event.keyCode == 117 {
                 deleteSelected()
                 return
             }
-            if cmd && key == "z" {
-                undoLastDelete()
-                return
-            }
-            if cmd && key == "c" {
-                copySelection()
-                return
-            }
-            if cmd && key == "v" {
-                pasteClipboard()
-                return
-            }
-            if cmd && key == "d" {
-                duplicateSelection()
-                return
-            }
+        }
+    }
+    
+    /// Called from ViewController's key monitor for Cmd shortcuts
+    func handleCommandKey(_ key: String, shift: Bool) {
+        guard isEditing else { return }
+        switch key {
+        case "z":
+            if shift { redoLast() } else { undoLast() }
+        case "y": redoLast()
+        case "c": copySelection()
+        case "v": pasteClipboard()
+        case "d": duplicateSelection()
+        case "a": selectAllSprites()
+        default: break
         }
     }
     
@@ -796,7 +959,8 @@ class GameScene: SKScene {
         
         clipboard.removeAll()
         for node in selectedSprites {
-            guard let entry = sprites.first(where: { $0.node === node }) else { continue }
+            guard let idx = nodeToIndex[node] else { continue }
+            let entry = sprites[idx]
             clipboard.append((
                 imageName: entry.imageName,
                 isAsset: entry.isAsset,
@@ -833,6 +997,8 @@ class GameScene: SKScene {
             sprites.append(makeBouncingSprite(node: sprite, velocity: item.velocity, imageName: item.imageName, isAsset: item.isAsset, bounds: newBounds))
             selectSprite(sprite, updateVisuals: false)
         }
+        rebuildNodeIndex()
+        updateGroupSelectionVisual()
         if isEditing { updateBoundsVisuals() }
     }
     
@@ -843,7 +1009,7 @@ class GameScene: SKScene {
         var newNodes: [SKSpriteNode] = []
         
         for node in selectedSprites {
-            guard let entry = sprites.first(where: { $0.node === node }) else { continue }
+            guard let entry = nodeToIndex[node].map({ sprites[$0] }) else { continue }
             guard let texture = cachedTexture(imageName: entry.imageName, isAsset: entry.isAsset) else { continue }
             
             let sprite = SKSpriteNode(texture: texture)
@@ -856,10 +1022,12 @@ class GameScene: SKScene {
             newNodes.append(sprite)
         }
         
+        rebuildNodeIndex()
         clearSelection(updateVisuals: false)
         for node in newNodes {
             selectSprite(node, updateVisuals: false)
         }
+        updateGroupSelectionVisual()
         if isEditing { updateBoundsVisuals() }
     }
     
@@ -958,6 +1126,7 @@ class GameScene: SKScene {
                 sprites.append(makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds))
             }
             
+            rebuildNodeIndex()
             return true
         } catch {
             print("Load error: \(error)")
@@ -1005,6 +1174,7 @@ class GameScene: SKScene {
                         self.sprites.append(self.makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds))
                     }
                     
+                    self.rebuildNodeIndex()
                     self.lastUpdateTime = 0
                 } catch {
                     print("Load error: \(error)")
