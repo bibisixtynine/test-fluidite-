@@ -1631,6 +1631,9 @@ class GameScene: SKScene {
                 
                 let sprite = SKSpriteNode(texture: texture)
                 sprite.setScale(spriteData.scale)
+                if spriteData.velDx < 0 {
+                    sprite.xScale = -sprite.xScale
+                }
                 sprite.position = CGPoint(x: spriteData.posX, y: spriteData.posY)
                 addChild(sprite)
                 
@@ -1686,6 +1689,9 @@ class GameScene: SKScene {
                         
                         let sprite = SKSpriteNode(texture: texture)
                         sprite.setScale(spriteData.scale)
+                        if spriteData.velDx < 0 {
+                            sprite.xScale = -sprite.xScale
+                        }
                         sprite.position = CGPoint(x: spriteData.posX, y: spriteData.posY)
                         self.addChild(sprite)
                         
