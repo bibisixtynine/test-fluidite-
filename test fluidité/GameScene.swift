@@ -629,13 +629,33 @@ class GameScene: SKScene {
                 
                 // Z-order submenu
                 let zOrderMenu = NSMenu(title: "Ordre")
+                
+                // Display current z-order
+                let zValues = selectedSprites.compactMap { $0.zPosition }
+                let zMin = zValues.min() ?? 0
+                let zMax = zValues.max() ?? 0
+                let zLabel: String
+                if zMin == zMax {
+                    zLabel = "z-order actuel : \(Int(zMin))"
+                } else {
+                    zLabel = "z-order actuel : \(Int(zMin)) à \(Int(zMax))"
+                }
+                let zInfoItem = NSMenuItem(title: zLabel, action: nil, keyEquivalent: "")
+                zInfoItem.isEnabled = false
+                zOrderMenu.addItem(zInfoItem)
+                zOrderMenu.addItem(.separator())
+                
                 let bringFrontItem = NSMenuItem(title: "Passer en avant-plan", action: #selector(bringSelectionToFront), keyEquivalent: "")
                 bringFrontItem.target = self
                 zOrderMenu.addItem(bringFrontItem)
                 let sendBackItem = NSMenuItem(title: "Passer en arrière-plan", action: #selector(sendSelectionToBack), keyEquivalent: "")
                 sendBackItem.target = self
                 zOrderMenu.addItem(sendBackItem)
-                let zOrderSubmenuItem = NSMenuItem(title: "Ordre d'affichage", action: nil, keyEquivalent: "")
+                zOrderMenu.addItem(.separator())
+                let setZItem = NSMenuItem(title: "Définir le z-order…", action: #selector(promptSetZOrder), keyEquivalent: "")
+                setZItem.target = self
+                zOrderMenu.addItem(setZItem)
+                let zOrderSubmenuItem = NSMenuItem(title: "Ordre d'affichage (\(Int(zMin)))", action: nil, keyEquivalent: "")
                 zOrderSubmenuItem.submenu = zOrderMenu
                 menu.addItem(zOrderSubmenuItem)
                 
@@ -742,6 +762,31 @@ class GameScene: SKScene {
         let maxZ = sprites.map { $0.node.zPosition }.max() ?? 0
         for node in selectedSprites {
             node.zPosition = maxZ + 1
+        }
+    }
+    
+    @objc private func promptSetZOrder() {
+        let alert = NSAlert()
+        alert.messageText = "Définir le z-order"
+        alert.informativeText = "Entrez la valeur de z-order pour les sprites sélectionnés :"
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Annuler")
+        
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        let currentZ = selectedSprites.first?.zPosition ?? 0
+        input.stringValue = "\(Int(currentZ))"
+        alert.accessoryView = input
+        
+        alert.window.initialFirstResponder = input
+        
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if let value = Double(input.stringValue) {
+                let z = CGFloat(value)
+                for node in selectedSprites {
+                    node.zPosition = z
+                }
+            }
         }
     }
     
