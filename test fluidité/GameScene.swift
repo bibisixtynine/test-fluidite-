@@ -27,6 +27,16 @@ struct SpriteData: Codable {
     var oscillatingRotation: Bool?
     var zOrder: CGFloat?
     var cameraTracked: Bool?
+    var animTime: CGFloat?
+}
+
+struct SceneData: Codable {
+    var sprites: [SpriteData]
+    var cameraX: CGFloat?
+    var cameraY: CGFloat?
+    var cameraZoom: CGFloat?
+    var trackingOffsetX: CGFloat?
+    var trackingOffsetY: CGFloat?
 }
 
 struct BouncingSprite {
@@ -898,7 +908,6 @@ class GameScene: SKScene {
     
     @objc private func toggleEditMode() {
         isEditing.toggle()
-        trackedNode = nil
         
         if isEditing {
             updateBoundsVisuals()
@@ -1595,14 +1604,24 @@ class GameScene: SKScene {
                         animationType: entry.animationType.rawValue,
                         oscillatingRotation: entry.oscillatingRotation,
                         zOrder: node.zPosition,
-                        cameraTracked: self.trackedNode == node ? true : nil
+                        cameraTracked: self.trackedNode == node ? true : nil,
+                        animTime: entry.animTime
                     ))
                 }
+                
+                let sceneData = SceneData(
+                    sprites: dataList,
+                    cameraX: self.cameraNode.position.x,
+                    cameraY: self.cameraNode.position.y,
+                    cameraZoom: self.cameraNode.xScale,
+                    trackingOffsetX: self.trackedNode != nil ? self.trackingOffset.dx : nil,
+                    trackingOffsetY: self.trackedNode != nil ? self.trackingOffset.dy : nil
+                )
                 
                 do {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = .prettyPrinted
-                    let data = try encoder.encode(dataList)
+                    let data = try encoder.encode(sceneData)
                     try data.write(to: url)
                     // Also save to app support for auto-load on next launch
                     try data.write(to: self.sceneFilePath)
@@ -1619,12 +1638,26 @@ class GameScene: SKScene {
         
         do {
             let data = try Data(contentsOf: sceneFilePath)
-            let dataList = try JSONDecoder().decode([SpriteData].self, from: data)
+            let decoder = JSONDecoder()
+            
+            // Try new SceneData format first, fall back to old [SpriteData]
+            let dataList: [SpriteData]
+            var cameraState: (x: CGFloat, y: CGFloat, zoom: CGFloat, tox: CGFloat, toy: CGFloat)?
+            
+            if let sceneData = try? decoder.decode(SceneData.self, from: data) {
+                dataList = sceneData.sprites
+                if let cx = sceneData.cameraX, let cy = sceneData.cameraY, let cz = sceneData.cameraZoom {
+                    cameraState = (cx, cy, cz, sceneData.trackingOffsetX ?? 0, sceneData.trackingOffsetY ?? 0)
+                }
+            } else {
+                dataList = try decoder.decode([SpriteData].self, from: data)
+            }
             
             for entry in sprites {
                 entry.node.removeFromParent()
             }
             sprites.removeAll()
+            trackedNode = nil
             
             for spriteData in dataList {
                 guard let texture = cachedTexture(imageName: spriteData.imageName, isAsset: spriteData.isAsset) else { continue }
@@ -1647,14 +1680,23 @@ class GameScene: SKScene {
                 let animType = spriteData.animationType.flatMap { AnimationType(rawValue: $0) } ?? .bouncing
                 let oscRot = spriteData.oscillatingRotation ?? false
                 sprite.zPosition = spriteData.zOrder ?? 0
-                sprites.append(makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot))
+                var newSprite = makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot)
+                newSprite.animTime = spriteData.animTime ?? 0
+                sprites.append(newSprite)
                 if spriteData.cameraTracked == true {
                     trackedNode = sprite
-                    trackingOffset = .zero
                 }
             }
             
             rebuildNodeIndex()
+            
+            // Restore camera state
+            if let cam = cameraState {
+                cameraNode.position = CGPoint(x: cam.x, y: cam.y)
+                cameraNode.setScale(cam.zoom)
+                trackingOffset = CGVector(dx: cam.tox, dy: cam.toy)
+            }
+            
             return true
         } catch {
             print("Load error: \(error)")
@@ -1675,7 +1717,20 @@ class GameScene: SKScene {
             DispatchQueue.main.async {
                 do {
                     let data = try Data(contentsOf: url)
-                    let dataList = try JSONDecoder().decode([SpriteData].self, from: data)
+                    let decoder = JSONDecoder()
+                    
+                    // Try new SceneData format first, fall back to old [SpriteData]
+                    let dataList: [SpriteData]
+                    var cameraState: (x: CGFloat, y: CGFloat, zoom: CGFloat, tox: CGFloat, toy: CGFloat)?
+                    
+                    if let sceneData = try? decoder.decode(SceneData.self, from: data) {
+                        dataList = sceneData.sprites
+                        if let cx = sceneData.cameraX, let cy = sceneData.cameraY, let cz = sceneData.cameraZoom {
+                            cameraState = (cx, cy, cz, sceneData.trackingOffsetX ?? 0, sceneData.trackingOffsetY ?? 0)
+                        }
+                    } else {
+                        dataList = try decoder.decode([SpriteData].self, from: data)
+                    }
                     
                     for entry in self.sprites {
                         entry.node.removeFromParent()
@@ -1683,6 +1738,7 @@ class GameScene: SKScene {
                     self.sprites.removeAll()
                     self.clearSelection()
                     self.undoStack.removeAll()
+                    self.trackedNode = nil
                     
                     for spriteData in dataList {
                         guard let texture = self.cachedTexture(imageName: spriteData.imageName, isAsset: spriteData.isAsset) else { continue }
@@ -1705,15 +1761,23 @@ class GameScene: SKScene {
                         let animType = spriteData.animationType.flatMap { AnimationType(rawValue: $0) } ?? .bouncing
                         let oscRot = spriteData.oscillatingRotation ?? false
                         sprite.zPosition = spriteData.zOrder ?? 0
-                        self.sprites.append(self.makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot))
+                        var newSprite = self.makeBouncingSprite(node: sprite, velocity: vel, imageName: spriteData.imageName, isAsset: spriteData.isAsset, bounds: bounds, animationType: animType, oscillatingRotation: oscRot)
+                        newSprite.animTime = spriteData.animTime ?? 0
+                        self.sprites.append(newSprite)
                         if spriteData.cameraTracked == true {
                             self.trackedNode = sprite
-                            self.trackingOffset = .zero
                         }
                     }
                     
                     self.rebuildNodeIndex()
                     self.lastUpdateTime = 0
+                    
+                    // Restore camera state
+                    if let cam = cameraState {
+                        self.cameraNode.position = CGPoint(x: cam.x, y: cam.y)
+                        self.cameraNode.setScale(cam.zoom)
+                        self.trackingOffset = CGVector(dx: cam.tox, dy: cam.toy)
+                    }
                 } catch {
                     print("Load error: \(error)")
                 }
